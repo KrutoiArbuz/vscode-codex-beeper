@@ -1,0 +1,85 @@
+{
+  "name": "codex-beeper",
+  "displayName": "Codex Beeper",
+  "description": "Plays a desktop sound when Codex finishes a turn or asks for approval.",
+  "version": "0.1.0",
+  "publisher": "maks",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codexBeeper.toggle",
+    "onCommand:codexBeeper.testBeep",
+    "onCommand:codexBeeper.showLog"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexBeeper.toggle",
+        "title": "Codex Beeper: Toggle"
+      },
+      {
+        "command": "codexBeeper.testBeep",
+        "title": "Codex Beeper: Test Beep"
+      },
+      {
+        "command": "codexBeeper.showLog",
+        "title": "Codex Beeper: Show Log"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Beeper",
+      "properties": {
+        "codexBeeper.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Codex session monitoring."
+        },
+        "codexBeeper.codexHome": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Codex home directory. Empty means ~/.codex."
+        },
+        "codexBeeper.beepOnTaskComplete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound when Codex records a completed turn."
+        },
+        "codexBeeper.beepOnApprovalRequest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound when Codex records a command that asks for approval."
+        },
+        "codexBeeper.showNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show VS Code notifications alongside sounds."
+        },
+        "codexBeeper.customSoundCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional shell command used for sound playback. Empty uses platform defaults."
+        },
+        "codexBeeper.volumePercent": {
+          "type": "number",
+          "default": 35,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Playback volume for built-in sound commands."
+        },
+        "codexBeeper.scanIntervalMs": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 500,
+          "description": "Polling interval for Codex session logs."
+        }
+      }
+    }
+  }
+}
