@@ -1,7 +1,7 @@
 {
   "name": "codex-beeper",
   "displayName": "Codex Beeper",
-  "description": "Plays a desktop sound when Codex finishes a turn or asks for approval.",
+  "description": "Plays a desktop sound when Codex finishes a task or requires user input.",
   "version": "0.1.0",
   "publisher": "maks",
   "license": "UNLICENSED",
@@ -49,12 +49,12 @@
         "codexBeeper.beepOnTaskComplete": {
           "type": "boolean",
           "default": true,
-          "description": "Play a sound when Codex records a completed turn."
+          "description": "Play a sound when the main Codex agent completes a task."
         },
         "codexBeeper.beepOnApprovalRequest": {
           "type": "boolean",
           "default": true,
-          "description": "Play a sound when Codex records a command that asks for approval."
+          "description": "Play a sound when Codex requires manual approval or other user input. Automatically approved actions stay silent."
         },
         "codexBeeper.showNotifications": {
           "type": "boolean",

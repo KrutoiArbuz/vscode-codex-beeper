@@ -10,6 +10,7 @@ const OUTPUT = vscode.window.createOutputChannel("Codex Beeper");
 const STATE_BY_FILE = new Map();
 const RECENT_EVENTS = [];
 const RECENT_EVENT_SET = new Set();
+const METADATA_SCAN_BYTES = 1024 * 1024;
 
 let watcher;
 let pollTimer;
@@ -167,12 +168,9 @@ function primeFile(file) {
   try {
     const stats = fs.statSync(file);
     if (!STATE_BY_FILE.has(file)) {
-      STATE_BY_FILE.set(file, {
-        offset: stats.size,
-        pending: "",
-        ignore: false,
-        sawMeta: false
-      });
+      const state = createFileState(stats.size);
+      restoreFileState(file, state, stats.size);
+      STATE_BY_FILE.set(file, state);
     }
   } catch (error) {
     log(`Failed to prime ${file}: ${error.message}`);
@@ -182,12 +180,7 @@ function primeFile(file) {
 function processFile(file, includeExisting) {
   let state = STATE_BY_FILE.get(file);
   if (!state) {
-    state = {
-      offset: includeExisting ? 0 : 0,
-      pending: "",
-      ignore: false,
-      sawMeta: false
-    };
+    state = createFileState(includeExisting ? 0 : 0);
     STATE_BY_FILE.set(file, state);
   }
 
@@ -230,6 +223,73 @@ function processFile(file, includeExisting) {
   }
 }
 
+function createFileState(offset) {
+  return {
+    offset,
+    pending: "",
+    sessionKind: "unknown",
+    approvalsReviewer: "user"
+  };
+}
+
+function restoreFileState(file, state, size) {
+  if (size === 0) {
+    return;
+  }
+
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+
+    const headLength = Math.min(size, METADATA_SCAN_BYTES);
+    scanStateRecords(readFileSlice(fd, 0, headLength), state, false);
+
+    if (size > headLength) {
+      const tailStart = Math.max(0, size - METADATA_SCAN_BYTES);
+      scanStateRecords(
+        readFileSlice(fd, tailStart, size - tailStart),
+        state,
+        tailStart > 0
+      );
+    }
+  } catch (error) {
+    log(`Failed to restore session state from ${file}: ${error.message}`);
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore stale descriptor
+      }
+    }
+  }
+}
+
+function readFileSlice(fd, offset, length) {
+  const buffer = Buffer.alloc(length);
+  const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+  return buffer.subarray(0, bytesRead).toString("utf8");
+}
+
+function scanStateRecords(text, state, skipFirstPartialLine) {
+  const lines = text.split(/\r?\n/);
+  if (skipFirstPartialLine) {
+    lines.shift();
+  }
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    try {
+      updateStateFromRecord(state, JSON.parse(line));
+    } catch {
+      // ignore partial or malformed records
+    }
+  }
+}
+
 function handleLine(file, state, line) {
   if (!line.trim()) {
     return;
@@ -242,18 +302,13 @@ function handleLine(file, state, line) {
     return;
   }
 
+  updateStateFromRecord(state, record);
+
   if (record.type === "session_meta") {
-    state.sawMeta = true;
-    const payload = record.payload || {};
-    state.ignore = payload.thread_source === "subagent" || Boolean(payload.source && payload.source.subagent);
     return;
   }
 
-  if (state.ignore) {
-    return;
-  }
-
-  const kind = classify(record);
+  const kind = classify(record, state);
   if (!kind) {
     return;
   }
@@ -267,21 +322,111 @@ function handleLine(file, state, line) {
   notify(kind, messageFor(kind));
 }
 
-function classify(record) {
+function sessionKind(payload) {
+  const subagent = payload.source && payload.source.subagent;
+  const isSubagent = payload.thread_source === "subagent" || Boolean(subagent);
+
+  if (!isSubagent) {
+    return "main";
+  }
+
+  if (isGuardianSource(subagent)) {
+    return "guardian";
+  }
+
+  return "subagent";
+}
+
+function isGuardianSource(source) {
+  if (source === "guardian") {
+    return true;
+  }
+
+  if (!source || typeof source !== "object") {
+    return false;
+  }
+
+  return source.other === "guardian" || source.type === "guardian" || source.name === "guardian";
+}
+
+function updateStateFromRecord(state, record) {
   const payload = record.payload || {};
+
+  if (record.type === "session_meta") {
+    state.sessionKind = sessionKind(payload);
+  } else if (record.type === "turn_context") {
+    updateTurnState(state, payload);
+  } else if (record.type === "event_msg" && payload.type === "thread_settings_applied") {
+    updateTurnState(state, payload.thread_settings || {});
+  }
+}
+
+function updateTurnState(state, payload) {
+  if (typeof payload.approvals_reviewer === "string") {
+    state.approvalsReviewer = payload.approvals_reviewer;
+  }
+
+  if (state.sessionKind === "subagent" && payload.model === "codex-auto-review") {
+    state.sessionKind = "guardian";
+  }
+}
+
+function classify(record, state) {
+  const payload = record.payload || {};
+
+  if (state.sessionKind === "guardian") {
+    return classifyGuardianReview(record);
+  }
+
+  if (state.sessionKind === "subagent") {
+    return undefined;
+  }
 
   if (record.type === "event_msg" && payload.type === "task_complete") {
     return getConfig().get("beepOnTaskComplete", true) ? "complete" : undefined;
   }
 
   if (record.type === "response_item" && payload.type === "function_call") {
+    if (payload.name === "request_user_input") {
+      return getConfig().get("beepOnApprovalRequest", true) ? "input" : undefined;
+    }
+
     const args = parseArguments(payload.arguments);
-    if (args && args.sandbox_permissions === "require_escalated") {
+    if (
+      args &&
+      args.sandbox_permissions === "require_escalated" &&
+      isManualReviewer(state.approvalsReviewer)
+    ) {
       return getConfig().get("beepOnApprovalRequest", true) ? "approval" : undefined;
     }
   }
 
   return undefined;
+}
+
+function classifyGuardianReview(record) {
+  const payload = record.payload || {};
+  if (record.type !== "event_msg" || payload.type !== "task_complete") {
+    return undefined;
+  }
+
+  const assessment = parseArguments(payload.last_agent_message);
+  if (!assessment) {
+    return undefined;
+  }
+
+  const needsAttention =
+    assessment.outcome === "deny" ||
+    assessment.status === "denied" ||
+    assessment.status === "timedOut";
+
+  return needsAttention && getConfig().get("beepOnApprovalRequest", true)
+    ? "approval"
+    : undefined;
+}
+
+function isManualReviewer(reviewer) {
+  return reviewer !== "auto_review" && reviewer !== "guardian_subagent";
 }
 
 function parseArguments(value) {
@@ -332,6 +477,9 @@ function rememberEvent(key) {
 function messageFor(kind) {
   if (kind === "approval") {
     return "Codex is asking for approval";
+  }
+  if (kind === "input") {
+    return "Codex needs your input";
   }
   if (kind === "test") {
     return "Codex Beeper test";
