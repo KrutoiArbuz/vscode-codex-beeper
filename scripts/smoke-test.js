@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const childProcess = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -9,13 +10,45 @@ const Module = require("module");
 const repoRoot = path.resolve(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-beeper-"));
 const sessionsDir = path.join(tempRoot, "sessions", "2026", "07", "18");
+const globalStorageDir = path.join(tempRoot, "vscode-global-storage");
+const fakeBinDir = path.join(tempRoot, "bin");
 fs.mkdirSync(sessionsDir, { recursive: true });
+fs.mkdirSync(fakeBinDir, { recursive: true });
+
+const fakePaplay = path.join(fakeBinDir, "paplay");
+fs.writeFileSync(fakePaplay, "", "utf8");
+fs.chmodSync(fakePaplay, 0o755);
+process.env.PATH = `${fakeBinDir}${path.delimiter}${process.env.PATH || ""}`;
 
 const notifications = [];
+const errors = [];
 const logs = [];
 const disposables = [];
 let onDidCreate;
 let onDidChange;
+const registeredCommands = new Map();
+const soundSpawns = [];
+let selectedSound;
+
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = (command, args) => {
+  soundSpawns.push({ command, args });
+  const child = {
+    kill: () => undefined,
+    once: () => child,
+    unref: () => undefined
+  };
+  return child;
+};
+
+function fileUri(file) {
+  return {
+    fsPath: file,
+    path: file,
+    scheme: "file",
+    toString: () => `file://${file}`
+  };
+}
 
 const fakeConfig = {
   enabled: true,
@@ -24,6 +57,7 @@ const fakeConfig = {
   beepOnApprovalRequest: true,
   showNotifications: true,
   customSoundCommand: "true",
+  completionSoundFile: "",
   volumePercent: 35,
   scanIntervalMs: 500
 };
@@ -44,7 +78,12 @@ const fakeVscode = {
     showInformationMessage: async (message) => {
       notifications.push(message);
       return undefined;
-    }
+    },
+    showErrorMessage: async (message) => {
+      errors.push(message);
+      return undefined;
+    },
+    showOpenDialog: async () => selectedSound ? [selectedSound] : undefined
   },
   workspace: {
     getConfiguration: () => ({
@@ -53,6 +92,17 @@ const fakeVscode = {
         fakeConfig[key] = value;
       }
     }),
+    fs: {
+      copy: async (source, destination) => {
+        fs.copyFileSync(source.fsPath, destination.fsPath);
+      },
+      createDirectory: async (uri) => {
+        fs.mkdirSync(uri.fsPath, { recursive: true });
+      },
+      delete: async (uri) => {
+        fs.rmSync(uri.fsPath);
+      }
+    },
     onDidChangeConfiguration: () => ({ dispose: () => undefined }),
     createFileSystemWatcher: () => ({
       onDidCreate: (listener) => {
@@ -65,7 +115,14 @@ const fakeVscode = {
     })
   },
   commands: {
-    registerCommand: () => ({ dispose: () => undefined })
+    registerCommand: (command, callback) => {
+      registeredCommands.set(command, callback);
+      return { dispose: () => registeredCommands.delete(command) };
+    }
+  },
+  Uri: {
+    file: fileUri,
+    joinPath: (base, ...parts) => fileUri(path.join(base.fsPath, ...parts))
   },
   RelativePattern: class RelativePattern {
     constructor(base, pattern) {
@@ -151,13 +208,39 @@ async function main() {
   appendGuardianMeta(guardianFile);
 
   const extension = require(path.join(repoRoot, "extension.js"));
-  extension.activate({ subscriptions: disposables });
+  extension.activate({
+    subscriptions: disposables,
+    globalStorageUri: fakeVscode.Uri.file(globalStorageDir)
+  });
+
+  const sourceSound = path.join(tempRoot, "selected-sound.wav");
+  fs.writeFileSync(sourceSound, "fake wave data", "utf8");
+  selectedSound = fakeVscode.Uri.file(sourceSound);
+
+  const selectSound = registeredCommands.get("codexBeeper.selectCompletionSound");
+  assert(selectSound, "Select Completion Sound command was not registered");
+  await selectSound();
+
+  const storedSound = path.join(globalStorageDir, "sounds", "selected-sound.wav");
+  assert.strictEqual(fakeConfig.completionSoundFile, "selected-sound.wav");
+  assert.strictEqual(fs.readFileSync(storedSound, "utf8"), "fake wave data");
+
+  fs.rmSync(sourceSound);
+  assert(fs.existsSync(storedSound), "Managed sound copy should survive removal of the source file");
+
+  const testBeep = registeredCommands.get("codexBeeper.testBeep");
+  assert(testBeep, "Test Beep command was not registered");
+  await testBeep();
+  assert(
+    soundSpawns.some(({ args }) => args.includes(storedSound)),
+    "Test Beep should play the VS Code-managed sound copy"
+  );
 
   appendEscalatedCall(autoFile, "02");
 
-  assert.deepStrictEqual(
-    notifications,
-    [],
+  assert.strictEqual(
+    notifications.filter((message) => message === "Codex is asking for approval").length,
+    0,
     "auto-reviewed escalation must stay silent after restoring an existing session"
   );
 
@@ -174,9 +257,9 @@ async function main() {
     }
   });
 
-  assert.deepStrictEqual(
-    notifications,
-    [],
+  assert.strictEqual(
+    notifications.filter((message) => message === "Codex is asking for approval").length,
+    0,
     "automatically approved escalation must stay silent after restoring a reviewer session"
   );
 
@@ -278,11 +361,21 @@ async function main() {
 
   extension.deactivate();
 
+  if (errors.length > 0) {
+    console.error(JSON.stringify({ notifications, errors, logs }, null, 2));
+    process.exit(1);
+  }
+
   console.log("smoke ok");
-  console.log(JSON.stringify({ notifications }, null, 2));
+  console.log(JSON.stringify({ notifications, storedSound }, null, 2));
+
+  childProcess.spawn = originalSpawn;
+  fs.rmSync(tempRoot, { recursive: true });
 }
 
 main().catch((error) => {
+  childProcess.spawn = originalSpawn;
+  fs.rmSync(tempRoot, { recursive: true, force: true });
   console.error(error);
   process.exit(1);
 });

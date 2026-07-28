@@ -15,7 +15,8 @@
     "onStartupFinished",
     "onCommand:codexBeeper.toggle",
     "onCommand:codexBeeper.testBeep",
-    "onCommand:codexBeeper.showLog"
+    "onCommand:codexBeeper.showLog",
+    "onCommand:codexBeeper.selectCompletionSound"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -31,6 +32,10 @@
       {
         "command": "codexBeeper.showLog",
         "title": "Codex Beeper: Show Log"
+      },
+      {
+        "command": "codexBeeper.selectCompletionSound",
+        "title": "Codex Beeper: Select Completion Sound"
       }
     ],
     "configuration": {
@@ -64,7 +69,13 @@
         "codexBeeper.customSoundCommand": {
           "type": "string",
           "default": "",
-          "description": "Optional shell command used for sound playback. Empty uses platform defaults."
+          "description": "Optional shell command used for approval sounds and as a fallback when no completion sound file is selected. Empty uses platform defaults."
+        },
+        "codexBeeper.completionSoundFile": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Audio file used when Codex completes a request. The selected file is copied into VS Code-managed extension storage, so moving or deleting the original does not affect playback. [Select an audio file…](command:codexBeeper.selectCompletionSound) Clear this setting to use the default sound."
         },
         "codexBeeper.volumePercent": {
           "type": "number",
