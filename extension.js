@@ -10,13 +10,30 @@ const OUTPUT = vscode.window.createOutputChannel("Codex Beeper");
 const STATE_BY_FILE = new Map();
 const RECENT_EVENTS = [];
 const RECENT_EVENT_SET = new Set();
+const SOUND_STORAGE_DIRECTORY = "sounds";
+const COMPLETION_SOUND_SETTING = "completionSoundFile";
+const SUPPORTED_AUDIO_EXTENSIONS = new Set([
+  ".aac",
+  ".aif",
+  ".aiff",
+  ".caf",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".oga",
+  ".ogg",
+  ".wav",
+  ".wma"
+]);
 
 let watcher;
 let pollTimer;
 let statusBar;
 let enabled = true;
+let extensionContext;
 
 function activate(context) {
+  extensionContext = context;
   enabled = getConfig().get("enabled", true);
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
@@ -27,6 +44,7 @@ function activate(context) {
     vscode.commands.registerCommand("codexBeeper.toggle", toggle),
     vscode.commands.registerCommand("codexBeeper.testBeep", () => notify("test", "Codex Beeper test")),
     vscode.commands.registerCommand("codexBeeper.showLog", () => OUTPUT.show(true)),
+    vscode.commands.registerCommand("codexBeeper.selectCompletionSound", selectCompletionSound),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("codexBeeper")) {
         restart();
@@ -39,6 +57,7 @@ function activate(context) {
 
 function deactivate() {
   stop();
+  extensionContext = undefined;
   OUTPUT.dispose();
 }
 
@@ -339,6 +358,98 @@ function messageFor(kind) {
   return "Codex finished";
 }
 
+async function selectCompletionSound() {
+  if (!extensionContext) {
+    return;
+  }
+
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: true,
+    canSelectFolders: false,
+    canSelectMany: false,
+    title: "Select a Codex completion sound",
+    openLabel: "Use Completion Sound",
+    filters: {
+      "Audio files": Array.from(SUPPORTED_AUDIO_EXTENSIONS, (extension) => extension.slice(1))
+    }
+  });
+
+  if (!selected || selected.length === 0) {
+    return;
+  }
+
+  const source = selected[0];
+  const sourcePath = source.fsPath || source.path;
+  const fileName = path.basename(sourcePath);
+  const extension = path.extname(fileName).toLowerCase();
+
+  if (!SUPPORTED_AUDIO_EXTENSIONS.has(extension)) {
+    vscode.window.showErrorMessage(`Unsupported audio format: ${extension || "no file extension"}.`);
+    return;
+  }
+
+  const storageDirectory = vscode.Uri.joinPath(extensionContext.globalStorageUri, SOUND_STORAGE_DIRECTORY);
+  const destination = vscode.Uri.joinPath(storageDirectory, fileName);
+  const previousName = configuredCompletionSoundName();
+
+  try {
+    await vscode.workspace.fs.createDirectory(storageDirectory);
+
+    if (source.toString() !== destination.toString()) {
+      await vscode.workspace.fs.copy(source, destination, { overwrite: true });
+    }
+
+    await getConfig().update(
+      COMPLETION_SOUND_SETTING,
+      fileName,
+      vscode.ConfigurationTarget.Global
+    );
+
+    if (previousName && !sameStoredSound(previousName, fileName)) {
+      await deleteStoredSound(previousName);
+    }
+
+    log(`Stored completion sound in VS Code extension storage: ${destination.fsPath}`);
+    vscode.window.showInformationMessage(`Codex completion sound set to ${fileName}.`);
+  } catch (error) {
+    log(`Failed to store completion sound: ${error.message}`);
+    vscode.window.showErrorMessage(`Could not save the completion sound: ${error.message}`);
+  }
+}
+
+function sameStoredSound(firstName, secondName) {
+  const first = storedCompletionSoundUri(firstName);
+  const second = storedCompletionSoundUri(secondName);
+  if (!first || !second) {
+    return false;
+  }
+
+  if (first.scheme !== "file" || second.scheme !== "file") {
+    return first.toString() === second.toString();
+  }
+
+  const firstPath = path.resolve(first.fsPath);
+  const secondPath = path.resolve(second.fsPath);
+  if (process.platform === "win32" || process.platform === "darwin") {
+    return firstPath.toLowerCase() === secondPath.toLowerCase();
+  }
+
+  return firstPath === secondPath;
+}
+
+async function deleteStoredSound(fileName) {
+  const uri = storedCompletionSoundUri(fileName);
+  if (!uri) {
+    return;
+  }
+
+  try {
+    await vscode.workspace.fs.delete(uri);
+  } catch {
+    // The previous managed copy may already have been removed.
+  }
+}
+
 function notify(kind, message) {
   log(message);
   playSound(kind);
@@ -349,6 +460,19 @@ function notify(kind, message) {
 }
 
 function playSound(kind) {
+  if (kind === "complete" || kind === "test") {
+    const storedSound = storedCompletionSoundPath();
+    if (storedSound) {
+      const command = soundFileCommand(storedSound);
+      if (command) {
+        spawnDetached(command.command, command.args, kind, command.environment);
+        return;
+      }
+
+      log(`No audio player is available for the stored completion sound: ${storedSound}`);
+    }
+  }
+
   const custom = getConfig().get("customSoundCommand", "").trim();
   if (custom) {
     runShellCommand(custom, kind);
@@ -362,6 +486,114 @@ function playSound(kind) {
   }
 
   spawnDetached(command.command, command.args, kind);
+}
+
+function configuredCompletionSoundName() {
+  const configured = getConfig().get(COMPLETION_SOUND_SETTING, "").trim();
+  if (!configured) {
+    return undefined;
+  }
+
+  if (
+    path.basename(configured) !== configured ||
+    !SUPPORTED_AUDIO_EXTENSIONS.has(path.extname(configured).toLowerCase())
+  ) {
+    log(`Ignoring invalid ${COMPLETION_SOUND_SETTING} setting: ${configured}`);
+    return undefined;
+  }
+
+  return configured;
+}
+
+function storedCompletionSoundUri(fileName = configuredCompletionSoundName()) {
+  if (!extensionContext || !fileName) {
+    return undefined;
+  }
+
+  return vscode.Uri.joinPath(extensionContext.globalStorageUri, SOUND_STORAGE_DIRECTORY, fileName);
+}
+
+function storedCompletionSoundPath() {
+  const uri = storedCompletionSoundUri();
+  if (!uri) {
+    return undefined;
+  }
+
+  if (!fs.existsSync(uri.fsPath)) {
+    log(`Stored completion sound is missing: ${uri.fsPath}`);
+    return undefined;
+  }
+
+  return uri.fsPath;
+}
+
+function soundFileCommand(soundFile) {
+  const volume = volumePercent();
+
+  if (process.platform === "darwin") {
+    return {
+      command: "afplay",
+      args: ["-v", String(volume / 100), soundFile]
+    };
+  }
+
+  if (process.platform === "win32") {
+    const script = [
+      "Add-Type -AssemblyName PresentationCore",
+      "$player = New-Object System.Windows.Media.MediaPlayer",
+      "$player.Open([Uri]$env:CODEX_BEEPER_SOUND_FILE)",
+      "$player.Volume = [double]$env:CODEX_BEEPER_SOUND_VOLUME",
+      "$player.Play()",
+      "$deadline = (Get-Date).AddMilliseconds(2000)",
+      "while (-not $player.NaturalDuration.HasTimeSpan -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }",
+      "if ($player.NaturalDuration.HasTimeSpan) { Start-Sleep -Milliseconds ([Math]::Min(2500, [Math]::Max(250, $player.NaturalDuration.TimeSpan.TotalMilliseconds))) } else { Start-Sleep -Milliseconds 500 }",
+      "$player.Close()"
+    ].join("; ");
+
+    return {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Sta", "-Command", script],
+      environment: {
+        ...process.env,
+        CODEX_BEEPER_SOUND_FILE: soundFile,
+        CODEX_BEEPER_SOUND_VOLUME: String(volume / 100)
+      }
+    };
+  }
+
+  const paplay = findExecutable("paplay");
+  if (paplay) {
+    return {
+      command: paplay,
+      args: [`--volume=${pulseVolume(volume)}`, soundFile]
+    };
+  }
+
+  const ffplay = findExecutable("ffplay");
+  if (ffplay) {
+    return {
+      command: ffplay,
+      args: ["-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", String(volume), soundFile]
+    };
+  }
+
+  const canberra = findExecutable("canberra-gtk-play");
+  if (canberra) {
+    return {
+      command: canberra,
+      args: ["-f", soundFile]
+    };
+  }
+
+  const aplay = findExecutable("aplay");
+  if (aplay && path.extname(soundFile).toLowerCase() === ".wav") {
+    return {
+      command: aplay,
+      args: ["-q", soundFile]
+    };
+  }
+
+  return undefined;
 }
 
 function defaultSoundCommand() {
@@ -437,11 +669,15 @@ function findExecutable(name) {
   return undefined;
 }
 
-function spawnDetached(command, args, kind) {
+function spawnDetached(command, args, kind, environment) {
   try {
     const child = cp.spawn(command, args, {
       detached: true,
-      stdio: "ignore"
+      stdio: "ignore",
+      ...(environment ? { env: environment } : {})
+    });
+    child.once("error", (error) => {
+      log(`Sound process failed for ${kind}: ${error.message}`);
     });
     child.unref();
 
