@@ -27,6 +27,15 @@ continues to work if the original file is moved or deleted.
 `codexBeeper.completionSoundFile` setting to return to the platform default. The selected
 file applies to completed requests; approval requests keep their existing sound behavior.
 
+To play only part of the selected file, set:
+
+- `codexBeeper.completionSoundStartSeconds` — where playback begins, in seconds
+- `codexBeeper.completionSoundEndSeconds` — where playback stops, in seconds; use `0` to play through the end
+
+For example, start `1.25` and end `2.75` plays a 1.5-second clip. The end must be
+greater than the start. On Linux and macOS, a non-zero start position requires
+`ffplay` from FFmpeg; Windows uses its built-in media player.
+
 ## Settings
 
 - `codexBeeper.enabled`
@@ -36,5 +45,7 @@ file applies to completed requests; approval requests keep their existing sound 
 - `codexBeeper.showNotifications`
 - `codexBeeper.customSoundCommand`
 - `codexBeeper.completionSoundFile`
+- `codexBeeper.completionSoundStartSeconds`
+- `codexBeeper.completionSoundEndSeconds`
 - `codexBeeper.volumePercent`
 - `codexBeeper.scanIntervalMs`

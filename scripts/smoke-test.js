@@ -18,6 +18,9 @@ fs.mkdirSync(fakeBinDir, { recursive: true });
 const fakePaplay = path.join(fakeBinDir, "paplay");
 fs.writeFileSync(fakePaplay, "", "utf8");
 fs.chmodSync(fakePaplay, 0o755);
+const fakeFfplay = path.join(fakeBinDir, "ffplay");
+fs.writeFileSync(fakeFfplay, "", "utf8");
+fs.chmodSync(fakeFfplay, 0o755);
 process.env.PATH = `${fakeBinDir}${path.delimiter}${process.env.PATH || ""}`;
 
 const notifications = [];
@@ -58,6 +61,8 @@ const fakeConfig = {
   showNotifications: true,
   customSoundCommand: "true",
   completionSoundFile: "",
+  completionSoundStartSeconds: 1.25,
+  completionSoundEndSeconds: 2.75,
   volumePercent: 35,
   scanIntervalMs: 500
 };
@@ -234,6 +239,13 @@ async function main() {
   assert(
     soundSpawns.some(({ args }) => args.includes(storedSound)),
     "Test Beep should play the VS Code-managed sound copy"
+  );
+  const clipSpawn = soundSpawns.find(({ args }) => args.includes(storedSound));
+  assert.strictEqual(clipSpawn.command, fakeFfplay);
+  assert.deepStrictEqual(
+    clipSpawn.args.slice(clipSpawn.args.indexOf("-ss"), clipSpawn.args.indexOf("-ss") + 4),
+    ["-ss", "1.25", "-t", "1.5"],
+    "Test Beep should apply the configured start and end positions"
   );
 
   appendEscalatedCall(autoFile, "02");

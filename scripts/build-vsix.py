@@ -8,7 +8,6 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-VSIX = DIST / "codex-beeper-0.1.0.vsix"
 
 
 def read_package() -> dict:
@@ -58,17 +57,18 @@ def manifest_xml(package: dict) -> str:
 
 def main() -> int:
     package = read_package()
+    vsix = DIST / f"codex-beeper-{package['version']}.vsix"
     if DIST.exists():
         shutil.rmtree(DIST)
     DIST.mkdir(parents=True)
 
-    with zipfile.ZipFile(VSIX, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(vsix, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types_xml())
         archive.writestr("extension.vsixmanifest", manifest_xml(package))
         for filename in ["package.json", "extension.js", "README.md"]:
             archive.write(ROOT / filename, f"extension/{filename}")
 
-    print(VSIX)
+    print(vsix)
     return 0
 
 
