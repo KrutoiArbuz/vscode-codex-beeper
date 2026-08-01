@@ -2,7 +2,7 @@
   "name": "codex-beeper",
   "displayName": "Codex Beeper",
   "description": "Plays a desktop sound when Codex finishes a task or requires user input.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "maks",
   "license": "UNLICENSED",
   "engines": {
@@ -76,6 +76,18 @@
           "default": "",
           "scope": "machine",
           "markdownDescription": "Audio file used when Codex completes a request. The selected file is copied into VS Code-managed extension storage, so moving or deleting the original does not affect playback. [Select an audio file…](command:codexBeeper.selectCompletionSound) Clear this setting to use the default sound."
+        },
+        "codexBeeper.completionSoundStartSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Start position in seconds for the selected completion sound. Decimals are supported."
+        },
+        "codexBeeper.completionSoundEndSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "End position in seconds for the selected completion sound. Must be greater than the start position. Set to 0 to play through the end of the file."
         },
         "codexBeeper.volumePercent": {
           "type": "number",
