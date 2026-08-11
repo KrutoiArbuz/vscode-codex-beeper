@@ -337,6 +337,16 @@ async function main() {
     "main task completion must notify"
   );
 
+  const unknownReviewerFile = path.join(sessionsDir, "rollout-unknown-reviewer.jsonl");
+  appendMainMeta(unknownReviewerFile);
+  appendEscalatedCall(unknownReviewerFile, "08");
+
+  assert.strictEqual(
+    notifications.filter((message) => message === "Codex is asking for approval").length,
+    1,
+    "escalation without explicit reviewer metadata must stay silent"
+  );
+
   const manualFile = path.join(sessionsDir, "rollout-manual.jsonl");
   appendMainMeta(manualFile);
   append(manualFile, {

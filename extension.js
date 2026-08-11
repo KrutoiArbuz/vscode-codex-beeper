@@ -263,7 +263,7 @@ function createFileState(offset) {
     offset,
     pending: '',
     sessionKind: 'unknown',
-    approvalsReviewer: 'user',
+    approvalsReviewer: 'unknown',
   };
 }
 
@@ -473,7 +473,9 @@ function classifyGuardianReview(record) {
 }
 
 function isManualReviewer(reviewer) {
-  return reviewer !== 'auto_review' && reviewer !== 'guardian_subagent';
+  // A new session file can be observed before its turn_context is appended.
+  // Only explicit manual-review metadata is safe to notify on immediately.
+  return reviewer === 'user';
 }
 
 function parseArguments(value) {
