@@ -429,17 +429,15 @@ function classify(record, state) {
     return getConfig().get('beepOnTaskComplete', true) ? 'complete' : undefined;
   }
 
-  if (record.type === 'response_item' && payload.type === 'function_call') {
+  if (record.type === 'response_item' && isFunctionCall(payload)) {
     if (payload.name === 'request_user_input') {
       return getConfig().get('beepOnApprovalRequest', true)
         ? 'input'
         : undefined;
     }
 
-    const args = parseArguments(payload.arguments);
     if (
-      args &&
-      args.sandbox_permissions === 'require_escalated' &&
+      requiresEscalatedPermission(payload) &&
       isManualReviewer(state.approvalsReviewer)
     ) {
       return getConfig().get('beepOnApprovalRequest', true)
@@ -449,6 +447,230 @@ function classify(record, state) {
   }
 
   return undefined;
+}
+
+function isFunctionCall(payload) {
+  return (
+    payload.type === 'function_call' || payload.type === 'custom_tool_call'
+  );
+}
+
+function requiresEscalatedPermission(payload) {
+  if (payload.type === 'function_call') {
+    const args = parseArguments(payload.arguments);
+    return args && args.sandbox_permissions === 'require_escalated';
+  }
+
+  if (payload.type !== 'custom_tool_call' || payload.name !== 'exec') {
+    return false;
+  }
+
+  return extractNestedToolArguments(payload.input, 'exec_command').some(
+    (argsSource) =>
+      hasStringProperty(
+        argsSource,
+        'sandbox_permissions',
+        'require_escalated',
+      ),
+  );
+}
+
+function extractNestedToolArguments(source, toolName) {
+  if (typeof source !== 'string') {
+    return [];
+  }
+
+  const marker = `tools.${toolName}`;
+  const argumentSources = [];
+  let quote;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+      continue;
+    }
+
+    if (!source.startsWith(marker, index)) {
+      continue;
+    }
+
+    let objectStart = index + marker.length;
+    while (/\s/.test(source[objectStart] || '')) {
+      objectStart += 1;
+    }
+    if (source[objectStart] !== '(') {
+      continue;
+    }
+
+    objectStart += 1;
+    while (/\s/.test(source[objectStart] || '')) {
+      objectStart += 1;
+    }
+    if (source[objectStart] !== '{') {
+      continue;
+    }
+
+    const objectEnd = findObjectEnd(source, objectStart);
+    if (objectEnd === undefined) {
+      continue;
+    }
+
+    argumentSources.push(source.slice(objectStart, objectEnd + 1));
+    index = objectEnd;
+  }
+
+  return argumentSources;
+}
+
+function findObjectEnd(source, objectStart) {
+  let depth = 0;
+  let quote;
+  let escaped = false;
+
+  for (let index = objectStart; index < source.length; index += 1) {
+    const character = source[index];
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+    } else if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function hasStringProperty(source, propertyName, expectedValue) {
+  const nesting = [];
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+
+    if (nesting.length === 1) {
+      const property = readStringProperty(source, index, propertyName);
+      if (property) {
+        if (property.value === expectedValue) {
+          return true;
+        }
+        index = property.end;
+        continue;
+      }
+    }
+
+    if (character === '"' || character === "'" || character === '`') {
+      const string = readQuotedString(source, index);
+      if (!string) {
+        return false;
+      }
+      index = string.end;
+    } else if (character === '{' || character === '[' || character === '(') {
+      nesting.push(character);
+    } else if (character === '}' || character === ']' || character === ')') {
+      nesting.pop();
+    }
+  }
+
+  return false;
+}
+
+function readStringProperty(source, start, propertyName) {
+  let cursor = start;
+
+  if (source[cursor] === '"' || source[cursor] === "'") {
+    const key = readQuotedString(source, cursor);
+    if (!key || key.value !== propertyName) {
+      return undefined;
+    }
+    cursor = key.end + 1;
+  } else {
+    if (!source.startsWith(propertyName, cursor)) {
+      return undefined;
+    }
+
+    const before = source[cursor - 1];
+    const after = source[cursor + propertyName.length];
+    if (isIdentifierCharacter(before) || isIdentifierCharacter(after)) {
+      return undefined;
+    }
+    cursor += propertyName.length;
+  }
+
+  while (/\s/.test(source[cursor] || '')) {
+    cursor += 1;
+  }
+  if (source[cursor] !== ':') {
+    return undefined;
+  }
+
+  cursor += 1;
+  while (/\s/.test(source[cursor] || '')) {
+    cursor += 1;
+  }
+  if (
+    source[cursor] !== '"' &&
+    source[cursor] !== "'" &&
+    source[cursor] !== '`'
+  ) {
+    return undefined;
+  }
+
+  return readQuotedString(source, cursor);
+}
+
+function readQuotedString(source, start) {
+  const quote = source[start];
+  let value = '';
+  let escaped = false;
+
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      value += character;
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === quote) {
+      return { value, end: index };
+    } else {
+      value += character;
+    }
+  }
+
+  return undefined;
+}
+
+function isIdentifierCharacter(character) {
+  return typeof character === 'string' && /[A-Za-z0-9_$]/.test(character);
 }
 
 function classifyGuardianReview(record) {

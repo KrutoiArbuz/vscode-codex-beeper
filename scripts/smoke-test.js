@@ -198,6 +198,24 @@ function appendEscalatedCall(file, id) {
   });
 }
 
+function appendCustomExecCall(file, id, args) {
+  const argumentsSource = Object.entries(args)
+    .map(([key, value]) => `${key}:${JSON.stringify(value)}`)
+    .join(",");
+
+  append(file, {
+    timestamp: `2026-07-18T00:00:${id}.500Z`,
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      name: "exec",
+      id: `custom-call-${id}`,
+      status: "completed",
+      input: `const result = await tools.exec_command({${argumentsSource}}); text(JSON.stringify(result));\n`
+    }
+  });
+}
+
 async function main() {
   const autoFile = path.join(sessionsDir, "rollout-auto.jsonl");
   appendMainMeta(autoFile);
@@ -249,6 +267,11 @@ async function main() {
   );
 
   appendEscalatedCall(autoFile, "02");
+  appendCustomExecCall(autoFile, "02", {
+    cmd: "git status",
+    sandbox_permissions: "require_escalated",
+    justification: "test"
+  });
 
   assert.strictEqual(
     notifications.filter((message) => message === "Codex is asking for approval").length,
@@ -362,6 +385,28 @@ async function main() {
     notifications.filter((message) => message === "Codex is asking for approval").length,
     2,
     "manual approval request must notify immediately"
+  );
+
+  appendCustomExecCall(manualFile, "11", {
+    cmd: "code --list-extensions",
+    sandbox_permissions: "require_escalated",
+    justification: "test"
+  });
+
+  assert.strictEqual(
+    notifications.filter((message) => message === "Codex is asking for approval").length,
+    3,
+    "manual approval request in the custom tool call format must notify"
+  );
+
+  appendCustomExecCall(manualFile, "12", {
+    cmd: "rg 'sandbox_permissions: require_escalated' ."
+  });
+
+  assert.strictEqual(
+    notifications.filter((message) => message === "Codex is asking for approval").length,
+    3,
+    "permission text inside a command must not be treated as an approval request"
   );
 
   append(autoFile, {
